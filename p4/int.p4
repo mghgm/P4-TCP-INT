@@ -7,6 +7,7 @@
 const bit<16> TYPE_IPV4 = 0x800;
 const bit<8>  TCP_PROTO = 0x06;
 const bit<8>  IP_PROTO = 253;
+const bit<8>  INT_KIND = 0x72;
 
 
 #define MAX_HOPS 10
@@ -16,9 +17,9 @@ typedef bit<48> macAddr_v;
 typedef bit<32> ip4Addr_v;
 typedef bit<9>  egressSpec_v;
 
-typedef bit<31>  switchID_v;
+typedef bit<7>   switchID_v;
 typedef bit<16>  qdepth_util_v;
-typedef bit<48>  deq_timedelta_v;
+typedef bit<24>  deq_timedelta_v;
 typedef bit<1>   int_echo_v;
 
 
@@ -71,6 +72,16 @@ struct tcp_format_two_option_top {
     bit<8>          length;
 }
 
+//header_union tcp_option_h {
+//    tcp_format_one_option_h format_one;
+//    tcp_format_two_option_h format_two;
+//}
+
+header tcp_options_h {
+    varbit<320> data;
+}
+
+
 header tcp_int_option_h {
     bit<8>          kind;
     bit<8>          length;
@@ -80,18 +91,12 @@ header tcp_int_option_h {
     int_echo_v      int_echo;
 }
 
-header_union tcp_option_h {
-    tcp_format_one_option_h format_one;
-    tcp_format_two_option_h format_two;
-    tcp_int_option_h        format_int;
-}
-
-
 struct headers_t {
-    ethernet_h          ethernet;
-    ipv4_h              ipv4;
-    tcp_h               tcp;
-    tcp_option_h[10]    tcp_options_vec;
+    ethernet_h              ethernet;
+    ipv4_h                  ipv4;
+    tcp_h                   tcp;
+    tcp_int_option_h        tcp_int_option;
+    tcp_options_h           tcp_options;
 }
 
 
@@ -105,8 +110,7 @@ struct parser_metadata_t {
 
 struct metadata_t {
     bit<16>     tcp_length; // TCP packet size in # of bytes to update checksum
-    bit<1>      has_int;    // 1-bit value indicator of existence of int option
-    bit<4>      int_idx;    // index of telemetry option in tcp_options_vec
+    varbit<320> tcp_options_data;
 }
 
 parser MyParser(packet_in packet,
@@ -139,60 +143,41 @@ parser MyParser(packet_in packet,
 
     state parse_tcp {
         packet.extract(hdr.tcp);
+        // TODO: Add verify for data offset ...
 
         transition select(hdr.tcp.data_offset){
-            5: accept;
+            0x5: accept;
             default: parse_tcp_options;
+            // default: accept;
         }
     }
-
-    
 
     state parse_tcp_options {
-        tcp_hdr_bytes_left = 4 * (bit<7>) (hdr.tcp.data_offset - 5);
+        tcp_hdr_bytes_left = 0x4 * (bit<7>)(hdr.tcp.data_offset - 0x5);
 
-        transition parse_next_option;
-    }
-
-    state parse_next_option {
-        transition select(tcp_hdr_bytes_left) {
-            0: accept;
-            default: parse_and_lookup_next_option;
-        }
-    }
-
-    state parse_and_lookup_next_option {
+        log_msg("bib start to parse options");
+        // We assume that int option is always the first option
         transition select(packet.lookahead<bit<8>>()) {
-            0:          parse_format_one_option;
-            1:          parse_format_one_option;
-            0xfd:       parse_int_option;
-            default:    parse_format_two_option;
+            INT_KIND: parse_tcp_int_option;
+            default: parse_other_tcp_options;
         }
     }
 
-    state parse_format_one_option {
-        packet.extract(hdr.tcp_options_vec.next.format_one);
+    state parse_tcp_int_option {
+        // TODO: Skip for now
 
-        tcp_hdr_bytes_left = tcp_hdr_bytes_left - 1;
-
-        transition parse_next_option;
+        transition accept;
     }
 
-    state parse_format_two_option {
-        bit<32> n = (bit<32>)packet.lookahead<tcp_format_two_option_top>().length;
+    state parse_other_tcp_options {
+        bit<32> options_length = (bit<32>)((bit<10>)tcp_hdr_bytes_left * 0x8);
+        packet.extract(hdr.tcp_options, options_length);
 
-        packet.extract(hdr.tcp_options_vec.next.format_two, (n - 2) * 8);
+        log_msg("bib parsed with len = {}", {options_length});
 
-        tcp_hdr_bytes_left = tcp_hdr_bytes_left - n;
-
-        transition parse_next_option;
+        transition accept;
     }
 
-    state parse_int_option {
-        packet.extract(hdr.tcp_options_vec.next.format_int);
-
-        transition parse_next_option;
-    }
 
 }   
 
@@ -239,9 +224,32 @@ control MyIngress(inout headers_t hdr,
 control MyEgress(inout headers_t hdr,
                  inout metadata_t meta,
                  inout standard_metadata_t standard_metadata) {
-
     action add_int_record(switchID_v swid) {
-    
+        // TODO: add if or another record for table if int already exists
+        
+        hdr.tcp_int_option.setValid();
+        hdr.tcp_int_option.kind = INT_KIND;
+        hdr.tcp_int_option.length = 0x08; // 14 bytes including kind and length
+        hdr.tcp_int_option.switchID = swid;
+        hdr.tcp_int_option.qdepth_util = (bit<16>)0x000000000000;
+        hdr.tcp_int_option.deq_timedelta = (bit<24>)0x000000000000;
+        hdr.tcp_int_option.int_echo = 0x0;
+
+
+            // since int_option is 32-bit aligned it's not required to add EOLs
+
+            //meta.tcp_length = hdr.ipv4.totalLen - (bit<16>)(hdr.ipv4.ihl * 4) + (bit<16>)((0x4 - hdr.tcp.data_offset + 0x5)) * 0x4;
+
+        hdr.ipv4.totalLen = hdr.ipv4.totalLen + 0x8;
+
+        meta.tcp_length = hdr.ipv4.totalLen - (bit<16>)hdr.ipv4.ihl * 0x4;
+        // meta.tcp_length = hdr.ipv4.totalLen - (bit<16>)hdr.ipv4.ihl * 0x4;
+        hdr.tcp.data_offset = hdr.tcp.data_offset + 0x2;
+
+
+        log_msg("bib len = {} totalLen = {} ihl = {} offset = {} bib = {}", {meta.tcp_length, hdr.ipv4.totalLen, hdr.ipv4.ihl, hdr.tcp.data_offset, (bit<16>)hdr.tcp.data_offset * (bit<16>)0x4});
+
+        //}
     }
 
     table int_record {
@@ -280,34 +288,36 @@ control MyComputeChecksum(inout headers_t hdr, inout metadata_t meta) {
             HashAlgorithm.csum16
         );
         
-//        update_checksum_with_payload(
-//            hdr.tcp.isValid(),
-//            { hdr.ipv4.srcAddr,
-//              hdr.ipv4.dstAddr,
-//              8w0,
-//              hdr.ipv4.protocol,
-//              meta.tcp_length,
-//              hdr.tcp.src_port,
-//              hdr.tcp.dst_port,
-//              hdr.tcp.seq_no,
-//              hdr.tcp.ack_no,
-//              hdr.tcp.data_offset,
-//              hdr.tcp.reserved,
-//              hdr.tcp.flags,    
-//              hdr.tcp.window,
-//              16w0,
-//              hdr.tcp.urgent_ptr,
-//              hdr.tcp_int_options.kind,
-//              hdr.tcp_int_options.length,
-//              hdr.tcp_int_options.switchID,
-//              hdr.tcp_int_options.qdepth_util,
-//              hdr.tcp_int_options.deq_timedelta,
-//              hdr.tcp_int_options.int_echo,
-//              hdr.tcp_int_options.padding
-//              },
-//            hdr.tcp.checksum,
-//            HashAlgorithm.csum16
-//        );
+       update_checksum_with_payload(
+           hdr.tcp.isValid(),
+           { hdr.ipv4.srcAddr,
+             hdr.ipv4.dstAddr,
+             8w0,
+             hdr.ipv4.protocol,
+             meta.tcp_length,
+             hdr.tcp.src_port,
+             hdr.tcp.dst_port,
+             hdr.tcp.seq_no,
+             hdr.tcp.ack_no,
+             hdr.tcp.data_offset,
+             hdr.tcp.reserved,
+             hdr.tcp.flags,    
+             hdr.tcp.window,
+             hdr.tcp.urgent_ptr,
+             
+             hdr.tcp_int_option.kind,
+             hdr.tcp_int_option.length,
+             hdr.tcp_int_option.switchID,
+             hdr.tcp_int_option.qdepth_util,
+             hdr.tcp_int_option.deq_timedelta,
+             hdr.tcp_int_option.int_echo,
+             hdr.tcp_options
+             },
+           hdr.tcp.checksum,
+           HashAlgorithm.csum16
+       );
+
+       
     }
 }
 
@@ -316,7 +326,8 @@ control MyDeparser(packet_out packet, in headers_t hdr) {
         packet.emit(hdr.ethernet);
         packet.emit(hdr.ipv4);
         packet.emit(hdr.tcp) ;
-        packet.emit(hdr.tcp_options_vec);
+        packet.emit(hdr.tcp_int_option);
+        packet.emit(hdr.tcp_options);
     }
 }
 
