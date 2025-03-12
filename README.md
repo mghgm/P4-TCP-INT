@@ -21,6 +21,15 @@ sudo arp -i enp7s0 -s 192.168.50.11 52:54:00:6c:5e:ce
 sudo ip link set enp7s0 up
 sudo ip link set enp8s0 up
 ```
+```bash
+sudo simple_switch --device-id 1 --thrift-port 9090 --interface 0@enp7s0 --interface 1@enp8s0   /sdf/int/int.json
+```
+```bash
+cat table.txt | simple_switch_CLI
+table_set_default int_record add_int_record  1
+table_add ipv4_lpm ipv4_forward 192.168.50.11/32 => 52:54:00:6c:5e:ce 0
+table_add ipv4_lpm ipv4_forward 192.168.50.12/32 => 52:54:00:5c:a6:94 1
+```
 
 
 ## InBand Network Telemetry metadata
