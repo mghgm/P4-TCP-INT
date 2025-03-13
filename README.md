@@ -35,6 +35,8 @@ table_add ipv4_lpm ipv4_forward 192.168.50.12/32 => 52:54:00:5c:a6:94 1
 ## InBand Network Telemetry metadata
 
 ## TODO
+- [ ] Put real data in INT-Headers
+- [ ] Handle Endiannes issue in BPF parser
 - [ ] Support ipv6
 - [ ] Support ipv4/ipv6 options
 - [ ] Support multiple INT headers
