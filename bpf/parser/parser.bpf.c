@@ -21,6 +21,19 @@ struct __attribute__((packed)) int_option {
     __u16 HopLatEcr : 16;
 };
 
+struct __attribute__((packed)) key_t {
+    __u32 src_ip;
+    __u16 src_port;
+};
+
+// Define BPF map
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, struct key_t);
+    __type(value, struct int_option);
+
+} int_option_map SEC(".maps");
 
 
 SEC("xdp")  // Fixed section name
@@ -87,16 +100,16 @@ int xdp_tcp_parser(struct xdp_md *ctx) {  // Fixed function signature
     // TODO: Switch value of TagFreq w. LinkSpd and LnkSEcr w. HIDEcr due to Endianess
 
 
-    bpf_printk("TCP-OPT kind: %x length: %d\n", option->Kind, option->Length);
-    bpf_printk("TCP-OPT TagFreq: %x \n", option->TagFreq);
-    bpf_printk("TCP-OPT LinkSpd: %x \n", option->LinkSpd);
-    bpf_printk("TCP-OPT INTval: %x \n", option->INTval);
-    bpf_printk("TCP-OPT HopID: %x \n", option->HopID);
-    bpf_printk("TCP-OPT HopLat: %x \n", option->HopLat);
-    bpf_printk("TCP-OPT INTEcr: %x \n", option->INTEcr);
-    bpf_printk("TCP-OPT LnkSEcr: %x \n", option->LnkSEcr);
-    bpf_printk("TCP-OPT HIDEcr: %x \n", option->HIDEcr);
-    bpf_printk("TCP-OPT HopLatEcr: %x \n", option->HopLatEcr);
+    // bpf_printk("TCP-OPT kind: %x length: %d\n", option->Kind, option->Length);
+    // bpf_printk("TCP-OPT TagFreq: %x \n", option->TagFreq);
+    // bpf_printk("TCP-OPT LinkSpd: %x \n", option->LinkSpd);
+    // bpf_printk("TCP-OPT INTval: %x \n", option->INTval);
+    // bpf_printk("TCP-OPT HopID: %x \n", option->HopID);
+    // bpf_printk("TCP-OPT HopLat: %x \n", option->HopLat);
+    // bpf_printk("TCP-OPT INTEcr: %x \n", option->INTEcr);
+    // bpf_printk("TCP-OPT LnkSEcr: %x \n", option->LnkSEcr);
+    // bpf_printk("TCP-OPT HIDEcr: %x \n", option->HIDEcr);
+    // bpf_printk("TCP-OPT HopLatEcr: %x \n", option->HopLatEcr);
  
     // Parse All TCP Options:
     // - Not Functional
@@ -139,6 +152,13 @@ int xdp_tcp_parser(struct xdp_md *ctx) {  // Fixed function signature
     //     // not required but insereted to avoid infinite loops
     //     optdata++;
     // }
+    
 
+    struct key_t key = {
+    	.src_ip = bpf_ntohl(ip->saddr),
+	.src_port = bpf_ntohs(tcp->source)
+    };
+
+    bpf_map_update_elem(&int_option_map, &key, option, BPF_ANY);
     return XDP_PASS;
 }
