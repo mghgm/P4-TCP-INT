@@ -9,6 +9,8 @@ const bit<8>  TCP_PROTO = 0x06;
 const bit<8>  IP_PROTO = 253;
 const bit<8>  INT_KIND = 0x72;
 
+const bit<8>  INT_OPTION_LENGTH = 0xc;
+
 
 #define MAX_HOPS 10
 
@@ -17,7 +19,7 @@ typedef bit<48> macAddr_v;
 typedef bit<32> ip4Addr_v;
 typedef bit<9>  egressSpec_v;
 
-typedef bit<7>   switchID_v;
+typedef bit<8>   switchID_v;
 typedef bit<16>  qdepth_util_v;
 typedef bit<24>  deq_timedelta_v;
 typedef bit<1>   int_echo_v;
@@ -85,10 +87,15 @@ header tcp_options_h {
 header tcp_int_option_h {
     bit<8>          kind;
     bit<8>          length;
-    switchID_v      switchID;
-    qdepth_util_v   qdepth_util;
-    deq_timedelta_v deq_timedelta;
-    int_echo_v      int_echo;
+    bit<4>          TagFreq;
+    bit<4>          LinkSpd;
+    bit<8>          INTval;
+    bit<8>          HopID;
+    bit<24>         HopLat;
+    bit<8>          INTEcr;
+    bit<4>          LnkSEcr;
+    bit<4>          HIDEcr;
+    bit<16>         HopLatEcr;
 }
 
 struct headers_t {
@@ -229,22 +236,22 @@ control MyEgress(inout headers_t hdr,
         
         hdr.tcp_int_option.setValid();
         hdr.tcp_int_option.kind = INT_KIND;
-        hdr.tcp_int_option.length = 0x08; // 14 bytes including kind and length
-        hdr.tcp_int_option.switchID = swid;
-        hdr.tcp_int_option.qdepth_util = (bit<16>)0x000000000000;
-        hdr.tcp_int_option.deq_timedelta = (bit<24>)0x000000000000;
-        hdr.tcp_int_option.int_echo = 0x0;
+        hdr.tcp_int_option.length = 0x0c;
+        hdr.tcp_int_option.TagFreq = 0xf;
+        hdr.tcp_int_option.LinkSpd = 0xc;
+        hdr.tcp_int_option.INTval = 0xaa;
+        hdr.tcp_int_option.HopID = swid;
+        hdr.tcp_int_option.HopLat = 0xbbaabb;
+        hdr.tcp_int_option.INTEcr = 0xee;
+        hdr.tcp_int_option.LnkSEcr = 0xf;
+        hdr.tcp_int_option.HIDEcr = 0xd;
+        hdr.tcp_int_option.HopLatEcr = 0x1212;
 
-
-            // since int_option is 32-bit aligned it's not required to add EOLs
-
-            //meta.tcp_length = hdr.ipv4.totalLen - (bit<16>)(hdr.ipv4.ihl * 4) + (bit<16>)((0x4 - hdr.tcp.data_offset + 0x5)) * 0x4;
-
-        hdr.ipv4.totalLen = hdr.ipv4.totalLen + 0x8;
+        hdr.ipv4.totalLen = hdr.ipv4.totalLen + (bit<16>)INT_OPTION_LENGTH; // TODO: Add some notes
 
         meta.tcp_length = hdr.ipv4.totalLen - (bit<16>)hdr.ipv4.ihl * 0x4;
         // meta.tcp_length = hdr.ipv4.totalLen - (bit<16>)hdr.ipv4.ihl * 0x4;
-        hdr.tcp.data_offset = hdr.tcp.data_offset + 0x2;
+        hdr.tcp.data_offset = hdr.tcp.data_offset + (bit<4>)(INT_OPTION_LENGTH / 4);
 
 
         log_msg("bib len = {} totalLen = {} ihl = {} offset = {} bib = {}", {meta.tcp_length, hdr.ipv4.totalLen, hdr.ipv4.ihl, hdr.tcp.data_offset, (bit<16>)hdr.tcp.data_offset * (bit<16>)0x4});
@@ -307,10 +314,15 @@ control MyComputeChecksum(inout headers_t hdr, inout metadata_t meta) {
              
              hdr.tcp_int_option.kind,
              hdr.tcp_int_option.length,
-             hdr.tcp_int_option.switchID,
-             hdr.tcp_int_option.qdepth_util,
-             hdr.tcp_int_option.deq_timedelta,
-             hdr.tcp_int_option.int_echo,
+             hdr.tcp_int_option.TagFreq,
+             hdr.tcp_int_option.LinkSpd,
+             hdr.tcp_int_option.INTval,
+             hdr.tcp_int_option.HopID,
+             hdr.tcp_int_option.HopLat,
+             hdr.tcp_int_option.INTEcr,
+             hdr.tcp_int_option.LnkSEcr,
+             hdr.tcp_int_option.HIDEcr,
+             hdr.tcp_int_option.HopLatEcr,
              hdr.tcp_options
              },
            hdr.tcp.checksum,
