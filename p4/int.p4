@@ -162,7 +162,6 @@ parser MyParser(packet_in packet,
     state parse_tcp_options {
         tcp_hdr_bytes_left = 0x4 * (bit<7>)(hdr.tcp.data_offset - 0x5);
 
-        log_msg("bib start to parse options");
         // We assume that int option is always the first option
         transition select(packet.lookahead<bit<8>>()) {
             INT_KIND: parse_tcp_int_option;
@@ -171,16 +170,16 @@ parser MyParser(packet_in packet,
     }
 
     state parse_tcp_int_option {
-        // TODO: Skip for now
+        packet.extract(hdr.tcp_int_option);
 
-        transition accept;
+        tcp_hdr_bytes_left = tcp_hdr_bytes_left - 0xc;
+
+        transition parse_tcp_options;
     }
 
     state parse_other_tcp_options {
         bit<32> options_length = (bit<32>)((bit<10>)tcp_hdr_bytes_left * 0x8);
         packet.extract(hdr.tcp_options, options_length);
-
-        log_msg("bib parsed with len = {}", {options_length});
 
         transition accept;
     }
@@ -232,8 +231,6 @@ control MyEgress(inout headers_t hdr,
                  inout metadata_t meta,
                  inout standard_metadata_t standard_metadata) {
     action add_int_record(switchID_v swid) {
-        // TODO: add if or another record for table if int already exists
-        
         hdr.tcp_int_option.setValid();
         hdr.tcp_int_option.kind = INT_KIND;
         hdr.tcp_int_option.length = 0x0c;
@@ -250,22 +247,40 @@ control MyEgress(inout headers_t hdr,
         hdr.ipv4.totalLen = hdr.ipv4.totalLen + (bit<16>)INT_OPTION_LENGTH; // TODO: Add some notes
 
         meta.tcp_length = hdr.ipv4.totalLen - (bit<16>)hdr.ipv4.ihl * 0x4;
-        // meta.tcp_length = hdr.ipv4.totalLen - (bit<16>)hdr.ipv4.ihl * 0x4;
         hdr.tcp.data_offset = hdr.tcp.data_offset + (bit<4>)(INT_OPTION_LENGTH / 4);
 
+        log_msg("bib len = {} totalLen = {} ihl = {} offset = {} bib = {}", {meta.tcp_length, hdr.ipv4.totalLen, hdr.ipv4.ihl, hdr.tcp.data_offset, (bit<16>)hdr.tcp.data_offset * (bit<16>)0x4});
+    }
+
+    action update_int_record(switchID_v swid) {
+        hdr.tcp_int_option.kind = INT_KIND;
+        hdr.tcp_int_option.length = 0x0c;
+        hdr.tcp_int_option.TagFreq = 0xf;
+        hdr.tcp_int_option.LinkSpd = 0xc;
+        hdr.tcp_int_option.INTval = 0xaa;
+        hdr.tcp_int_option.HopID = swid;
+        hdr.tcp_int_option.HopLat = 0xbbaabb;
+        hdr.tcp_int_option.INTEcr = 0xee;
+        hdr.tcp_int_option.LnkSEcr = 0xf;
+        hdr.tcp_int_option.HIDEcr = 0xd;
+        hdr.tcp_int_option.HopLatEcr = hdr.tcp_int_option.HopLatEcr + 0x1;
+
+        meta.tcp_length = hdr.ipv4.totalLen - (bit<16>)hdr.ipv4.ihl * 0x4;
 
         log_msg("bib len = {} totalLen = {} ihl = {} offset = {} bib = {}", {meta.tcp_length, hdr.ipv4.totalLen, hdr.ipv4.ihl, hdr.tcp.data_offset, (bit<16>)hdr.tcp.data_offset * (bit<16>)0x4});
 
-        //}
     }
 
     table int_record {
-        key = {}
+        key = {
+            hdr.tcp_int_option.isValid() : exact;
+        }
         actions = { 
-	        add_int_record; 
+	        add_int_record;
+            update_int_record;
 	        NoAction; 
         }
-        default_action = NoAction();      
+        default_action = NoAction();  
     }
     
     apply {

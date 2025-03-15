@@ -1,4 +1,5 @@
-table_set_default int_record add_int_record  4
+table_add int_record add_int_record 0 => 4
+table_add int_record update_int_record 1 => 4
 table_add ipv4_lpm ipv4_forward 192.168.50.11/32 => 52:54:00:6c:5e:ce 2
 table_add ipv4_lpm ipv4_forward 192.168.50.12/32 => 52:54:00:5c:a6:94 1
 table_add ipv4_lpm ipv4_forward 192.168.50.13/32 => 52:54:00:f6:dd:68 1
