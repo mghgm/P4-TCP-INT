@@ -11,6 +11,8 @@ const bit<8>  INT_KIND = 0x72;
 
 const bit<8>  INT_OPTION_LENGTH = 0xc;
 
+const bit<19> QUEUE_DEPTH_TH = 0x26666;
+
 
 #define MAX_HOPS 10
 
@@ -234,15 +236,20 @@ control MyEgress(inout headers_t hdr,
         hdr.tcp_int_option.setValid();
         hdr.tcp_int_option.kind = INT_KIND;
         hdr.tcp_int_option.length = 0x0c;
-        hdr.tcp_int_option.TagFreq = 0xf;
-        hdr.tcp_int_option.LinkSpd = 0xc;
-        hdr.tcp_int_option.INTval = 0xaa;
+        hdr.tcp_int_option.TagFreq = 0x0;
+        hdr.tcp_int_option.LinkSpd = 0x0;
+        hdr.tcp_int_option.INTval = 0x00;
         hdr.tcp_int_option.HopID = swid;
-        hdr.tcp_int_option.HopLat = 0xbbaabb;
-        hdr.tcp_int_option.INTEcr = 0xee;
-        hdr.tcp_int_option.LnkSEcr = 0xf;
-        hdr.tcp_int_option.HIDEcr = 0xd;
-        hdr.tcp_int_option.HopLatEcr = 0x1212;
+        hdr.tcp_int_option.HopLat = (bit<24>)standard_metadata.deq_timedelta;
+        hdr.tcp_int_option.INTEcr = 0x00;
+        hdr.tcp_int_option.LnkSEcr = 0x0;
+        hdr.tcp_int_option.HIDEcr = 0x0;
+        hdr.tcp_int_option.HopLatEcr = (bit<16>)(standard_metadata.enq_qdepth / 8);
+
+        // Consider the hop as a congested one
+        if (standard_metadata.enq_qdepth > QUEUE_DEPTH_TH) {
+            hdr.tcp_int_option.INTEcr = hdr.tcp_int_option.INTEcr + 0x1;
+        }
 
         hdr.ipv4.totalLen = hdr.ipv4.totalLen + (bit<16>)INT_OPTION_LENGTH; // TODO: Add some notes
 
@@ -255,15 +262,20 @@ control MyEgress(inout headers_t hdr,
     action update_int_record(switchID_v swid) {
         hdr.tcp_int_option.kind = INT_KIND;
         hdr.tcp_int_option.length = 0x0c;
-        hdr.tcp_int_option.TagFreq = 0xf;
-        hdr.tcp_int_option.LinkSpd = 0xc;
-        hdr.tcp_int_option.INTval = 0xaa;
+        hdr.tcp_int_option.TagFreq = 0x0;
+        hdr.tcp_int_option.LinkSpd = 0x0;
+        hdr.tcp_int_option.INTval = 0x00;
         hdr.tcp_int_option.HopID = swid;
-        hdr.tcp_int_option.HopLat = 0xbbaabb;
-        hdr.tcp_int_option.INTEcr = 0xee;
-        hdr.tcp_int_option.LnkSEcr = 0xf;
-        hdr.tcp_int_option.HIDEcr = 0xd;
-        hdr.tcp_int_option.HopLatEcr = hdr.tcp_int_option.HopLatEcr + 0x1;
+        hdr.tcp_int_option.HopLat = (bit<24>)standard_metadata.deq_timedelta;
+        hdr.tcp_int_option.INTEcr = 0x00;
+        hdr.tcp_int_option.LnkSEcr = 0x0;
+        hdr.tcp_int_option.HIDEcr = 0x0;
+        hdr.tcp_int_option.HopLatEcr = (bit<16>)(standard_metadata.enq_qdepth / 8);
+
+        // Consider the hop as a congested one
+        if (standard_metadata.enq_qdepth > QUEUE_DEPTH_TH) {
+            hdr.tcp_int_option.INTEcr = hdr.tcp_int_option.INTEcr + 0x1;
+        }
 
         meta.tcp_length = hdr.ipv4.totalLen - (bit<16>)hdr.ipv4.ihl * 0x4;
 
