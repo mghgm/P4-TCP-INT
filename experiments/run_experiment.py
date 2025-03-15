@@ -130,7 +130,6 @@ class ExerciseTopo(Topo):
             if link['node1'].startswith(DEVICE_PREFIX):
                 tmpDev = link['node1']
                 tmpSW = link['node2']
-                print("boooom")
                 self.addSwitchPort(tmpSW, tmpDev)
                 if not tmpSW in P4Switch.additional_links:
                     P4Switch.additional_links[tmpSW] = []
