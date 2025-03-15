@@ -59,6 +59,7 @@ class P4Host(Host):
 
 class P4Switch(Switch):
     """P4 virtual switch"""
+    additional_links = {}
 
     device_id = 0
 
@@ -122,10 +123,18 @@ class P4Switch(Switch):
         "Start up a new P4 switch"
         info("Starting P4 switch {}.\n".format(self.name))
         args = [self.sw_path]
+        
+        # Add addtional links
+        added_ports = 0
+        if self.name in P4Switch.additional_links:
+            for pair in P4Switch.additional_links[self.name]:
+                args.extend(['-i', str(pair[0]) + "@" + str(pair[1])])
+                added_ports += 1
 
         for port, intf in self.intfs.items():
             if not intf.IP():
-                args.extend(['-i', str(port) + "@" + intf.name])
+                args.extend(['-i', str(port + added_ports) + "@" + intf.name])
+
 
         if self.pcap_dump:
             args.append("--pcap")

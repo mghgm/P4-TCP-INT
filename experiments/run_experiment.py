@@ -37,6 +37,8 @@ from mininet.log import setLogLevel
 from p4_mininet import P4Switch, P4Host
 from p4runtime_switch import P4RuntimeSwitch
 
+DEVICE_PREFIX = "enp"
+
 
 def configureP4Switch(**switch_args):
     """ Helper class that is called by mininet to initialize
@@ -125,6 +127,16 @@ class ExerciseTopo(Topo):
             self.addSwitchPort(host_sw, host_name)
 
         for link in switch_links:
+            if link['node1'].startswith(DEVICE_PREFIX):
+                tmpDev = link['node1']
+                tmpSW = link['node2']
+                print("boooom")
+                self.addSwitchPort(tmpSW, tmpDev)
+                if not tmpSW in P4Switch.additional_links:
+                    P4Switch.additional_links[tmpSW] = []
+                P4Switch.additional_links[tmpSW].append((len(self.sw_port_mapping[tmpSW]), tmpDev))
+                continue
+
             self.addLink(link['node1'], link['node2'], delay=link['latency'], bw=link['bandwidth'])
             self.addSwitchPort(link['node1'], link['node2'])
             self.addSwitchPort(link['node2'], link['node1'])
