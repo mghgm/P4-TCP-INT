@@ -133,7 +133,7 @@ class P4Switch(Switch):
 
         for port, intf in self.intfs.items():
             if not intf.IP():
-                args.extend(['-i', str(port + added_ports) + "@" + intf.name])
+                args.extend(['-i', str(port) + "@" + intf.name])
 
 
         if self.pcap_dump:
@@ -210,3 +210,5 @@ class P4Switch(Switch):
         "Disconnect a data port"
 
         assert(0)
+
+

@@ -1,5 +1,7 @@
 {
     "hosts": [
+	"h1",
+	"h2"
     ],
     "switches": {
         "s1": { "cli_input" : "linear/s1-commands.txt" },
@@ -8,6 +10,11 @@
         "s4": { "cli_input" : "linear/s4-commands.txt" }
     },
     "links": [
-	    ["enp7s0", "s1"], ["s1", "s2"], ["s2", "s3"], ["s3", "s4"], ["enp8s0", "s4"]
+	["h1", "s1"],
+ 	["s1", "s2"],
+ 	["s2", "s3"],
+ 	["s3", "s4"],
+ 	["s4", "h2"],
+ 	["s4", "veth1"]
     ]
 }
