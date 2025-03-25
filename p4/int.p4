@@ -8,6 +8,7 @@ const bit<16> TYPE_IPV4 = 0x800;
 const bit<8>  TCP_PROTO = 0x06;
 const bit<8>  IP_PROTO = 253;
 const bit<8>  INT_KIND = 0x72;
+const bit<6>  INT_DSCP = 23;
 
 const bit<8>  INT_OPTION_LENGTH = 0xc;
 
@@ -143,12 +144,21 @@ parser MyParser(packet_in packet,
 
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
-        transition select(hdr.ipv4.protocol){
-            TCP_PROTO: parse_tcp;
+        bit<6> ip_dscp = (bit<6>)(hdr.ipv4.diffserv >> 2);
+
+        log_msg("bib dscp = {}", {ip_dscp});
+        transition select(ip_dscp){
+            INT_DSCP: parse_int_traffic;
             default: accept;
         }
     }
 
+    state parse_int_traffic {
+        transition select(hdr.ipv4.protocol) {
+            TCP_PROTO: parse_tcp;
+            default: accept;
+        }
+    }
 
     state parse_tcp {
         packet.extract(hdr.tcp);
@@ -157,7 +167,6 @@ parser MyParser(packet_in packet,
         transition select(hdr.tcp.data_offset){
             0x5: accept;
             default: parse_tcp_options;
-            // default: accept;
         }
     }
 
