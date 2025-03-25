@@ -23,9 +23,10 @@ func lookupBPFMap(bpfMap *ebpf.Map, ip string, port uint16) ([]byte, error) {
 		return nil, errors.New("only IPv4 is supported")
 	}
 
-	var key [6]byte
+	var key [8]byte
 	binary.LittleEndian.PutUint32(key[:4], binary.BigEndian.Uint32(ipv4))
-	binary.LittleEndian.PutUint16(key[4:], port)
+	binary.LittleEndian.PutUint16(key[4:6], port)
+	binary.LittleEndian.PutUint16(key[6:], 0)
 
 	var value [12]byte
 	if err := bpfMap.Lookup(&key, &value); err != nil {
@@ -68,7 +69,7 @@ func parsePort(portStr string) (uint16, error) {
 }
 
 func main() {
-	mapID := ebpf.MapID(10)
+	mapID := ebpf.MapID(23)
 	bpfMap, err := ebpf.NewMapFromID(mapID)
 	if err != nil {
 		log.Fatalf("Failed to open BPF map by ID: %v", err)
@@ -79,3 +80,4 @@ func main() {
 	log.Println("Server listening on :9100")
 	http.ListenAndServe(":9100", nil)
 }
+
