@@ -8,6 +8,7 @@ sudo ip a add 192.168.50.11/32 dev enp7s0
 sudo ip link set enp7s0 up
 sudo ip route add 192.168.50.12/32 via 192.168.50.11 dev enp7s0
 sudo arp -i enp7s0 -s 192.168.50.12 52:54:00:5c:a6:94
+sudo ethtool --offload enp7s0 rx off tx off
 ```
 ### BPF-Testbed-Baker
 ```bash
@@ -15,6 +16,7 @@ sudo ip a add 192.168.50.12/32 dev enp7s0
 sudo ip link set enp7s0 up
 sudo ip route add 192.168.50.11/32 via 192.168.50.12 dev enp7s0
 sudo arp -i enp7s0 -s 192.168.50.11 52:54:00:6c:5e:ce
+sudo ethtool --offload enp7s0 rx off tx off
 ```
 ### P4-Utils
 ```bash
