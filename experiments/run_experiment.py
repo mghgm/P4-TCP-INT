@@ -37,7 +37,7 @@ from mininet.log import setLogLevel
 from p4_mininet import P4Switch, P4Host
 from p4runtime_switch import P4RuntimeSwitch
 
-DEVICE_PREFIX = ["enp", "veth"]
+DEVICE_PREFIX = ["enp", "veth", "mininet"]
 
 
 def configureP4Switch(**switch_args):
@@ -125,29 +125,35 @@ class ExerciseTopo(Topo):
                          addr1=host_mac,
                          addr2=host_mac)
             self.addSwitchPort(host_sw, host_name)
+        
+        print("===")
 
+        rest = []
         for link in switch_links:
+            print(link['node1'], link['node2'])
             if any(link['node1'].startswith(prefix) for prefix in DEVICE_PREFIX):
                 tmpDev = link['node1']
                 tmpSW = link['node2']
-                self.addSwitchPort(tmpSW, tmpDev)
-                if not tmpSW in P4Switch.additional_links:
-                    P4Switch.additional_links[tmpSW] = []
-                P4Switch.additional_links[tmpSW].append((len(self.sw_port_mapping[tmpSW]), tmpDev))
+                rest.append((tmpSW, tmpDev))
                 continue
 
             if any(link['node2'].startswith(prefix) for prefix in DEVICE_PREFIX):
                 tmpDev = link['node2']
                 tmpSW = link['node1']
-                self.addSwitchPort(tmpSW, tmpDev)
-                if not tmpSW in P4Switch.additional_links:
-                    P4Switch.additional_links[tmpSW] = []
-                P4Switch.additional_links[tmpSW].append((len(self.sw_port_mapping[tmpSW]), tmpDev))
+                rest.append((tmpSW, tmpDev))
                 continue
 
             self.addLink(link['node1'], link['node2'], delay=link['latency'], bw=link['bandwidth'])
             self.addSwitchPort(link['node1'], link['node2'])
             self.addSwitchPort(link['node2'], link['node1'])
+    
+        for l in rest:
+            tmpSW = l[0]
+            tmpDev = l[1]
+            self.addSwitchPort(tmpSW, tmpDev)
+            if not tmpSW in P4Switch.additional_links:
+                P4Switch.additional_links[tmpSW] = []
+            P4Switch.additional_links[tmpSW].append((len(self.sw_port_mapping[tmpSW]), tmpDev))
 
         self.printPortMapping()
 
@@ -466,3 +472,4 @@ if __name__ == '__main__':
                               args.quiet)
 
     exercise.run_exercise()
+
