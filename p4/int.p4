@@ -62,27 +62,12 @@ header tcp_h {
     bit<16>     urgent_ptr;
 }
 
-header tcp_format_one_option_h {
-    bit<8>          kind;
-}
-
-header tcp_format_two_option_h {
-    bit<8>          kind;
-    bit<8>          length;
-    varbit<256>     data;
-}
-
 struct tcp_format_two_option_top {
     bit<8>          kind;
     bit<8>          length;
 }
 
-//header_union tcp_option_h {
-//    tcp_format_one_option_h format_one;
-//    tcp_format_two_option_h format_two;
-//}
-
-header tcp_options_h {
+header tcp_option_h {
     varbit<320> data;
 }
 
@@ -106,7 +91,7 @@ struct headers_t {
     ipv4_h                  ipv4;
     tcp_h                   tcp;
     tcp_int_option_h        tcp_int_option;
-    tcp_options_h           tcp_options;
+    tcp_option_h[10]        tcp_options_vec;
 }
 
 
@@ -146,7 +131,6 @@ parser MyParser(packet_in packet,
         packet.extract(hdr.ipv4);
         bit<6> ip_dscp = (bit<6>)(hdr.ipv4.diffserv >> 2);
 
-        log_msg("bib dscp = {}", {ip_dscp});
         transition select(ip_dscp){
             INT_DSCP: parse_int_traffic;
             default: accept;
@@ -171,31 +155,52 @@ parser MyParser(packet_in packet,
     }
 
     state parse_tcp_options {
-        tcp_hdr_bytes_left = 0x4 * (bit<7>)(hdr.tcp.data_offset - 0x5);
-
-        // We assume that int option is always the first option
-        transition select(packet.lookahead<bit<8>>()) {
-            INT_KIND: parse_tcp_int_option;
-            default: parse_other_tcp_options;
+        tcp_hdr_bytes_left = 4 * (bit<7>) (hdr.tcp.data_offset - 5);
+ 
+        transition parse_next_option;
+    }
+ 
+    state parse_next_option {
+        transition select(tcp_hdr_bytes_left) {
+            0: accept;
+            default: parse_and_lookup_next_option;
         }
     }
-
-    state parse_tcp_int_option {
+ 
+    state parse_and_lookup_next_option {
+        transition select(packet.lookahead<bit<8>>()) {
+            0:          parse_format_one_option;
+            1:          parse_format_one_option;
+            INT_KIND:   parse_int_option;
+            default:    parse_format_two_option;
+        }
+    }
+ 
+    state parse_format_one_option {
+        packet.extract(hdr.tcp_options_vec.next, 1 * 8);
+ 
+        tcp_hdr_bytes_left = tcp_hdr_bytes_left - 1;
+ 
+        transition parse_next_option;
+     }
+ 
+    state parse_format_two_option {
+        bit<32> n = (bit<32>)packet.lookahead<tcp_format_two_option_top>().length;
+ 
+        packet.extract(hdr.tcp_options_vec.next, n * 8);
+ 
+        tcp_hdr_bytes_left = tcp_hdr_bytes_left - (bit<7>)n;
+        
+        transition parse_next_option;
+    }
+ 
+    state parse_int_option {
         packet.extract(hdr.tcp_int_option);
 
-        tcp_hdr_bytes_left = tcp_hdr_bytes_left - 0xc;
-
-        transition parse_tcp_options;
+        tcp_hdr_bytes_left = tcp_hdr_bytes_left - (bit<7>)INT_OPTION_LENGTH;
+        
+        transition parse_next_option;
     }
-
-    state parse_other_tcp_options {
-        bit<32> options_length = (bit<32>)((bit<10>)tcp_hdr_bytes_left * 0x8);
-        packet.extract(hdr.tcp_options, options_length);
-
-        transition accept;
-    }
-
-
 }   
 
 control MyVerifyChecksum(inout headers_t hdr, inout metadata_t meta) {   
@@ -241,33 +246,7 @@ control MyIngress(inout headers_t hdr,
 control MyEgress(inout headers_t hdr,
                  inout metadata_t meta,
                  inout standard_metadata_t standard_metadata) {
-    action add_int_record(switchID_v swid) {
-        hdr.tcp_int_option.setValid();
-        hdr.tcp_int_option.kind = INT_KIND;
-        hdr.tcp_int_option.length = 0x0c;
-        hdr.tcp_int_option.TagFreq = 0x0;
-        hdr.tcp_int_option.LinkSpd = 0x0;
-        hdr.tcp_int_option.INTval = 0x00;
-        hdr.tcp_int_option.HopID = swid;
-        hdr.tcp_int_option.HopLat = (bit<24>)standard_metadata.deq_timedelta;
-        hdr.tcp_int_option.INTEcr = 0x00;
-        hdr.tcp_int_option.LnkSEcr = 0x0;
-        hdr.tcp_int_option.HIDEcr = 0x0;
-        hdr.tcp_int_option.HopLatEcr = (bit<16>)(standard_metadata.enq_qdepth / 8);
-
-        // Consider the hop as a congested one
-        if (standard_metadata.enq_qdepth > QUEUE_DEPTH_TH) {
-            hdr.tcp_int_option.INTEcr = hdr.tcp_int_option.INTEcr + 0x1;
-        }
-
-        hdr.ipv4.totalLen = hdr.ipv4.totalLen + (bit<16>)INT_OPTION_LENGTH; // TODO: Add some notes
-
-        meta.tcp_length = hdr.ipv4.totalLen - (bit<16>)hdr.ipv4.ihl * 0x4;
-        hdr.tcp.data_offset = hdr.tcp.data_offset + (bit<4>)(INT_OPTION_LENGTH / 4);
-
-        log_msg("bib len = {} totalLen = {} ihl = {} offset = {} bib = {}", {meta.tcp_length, hdr.ipv4.totalLen, hdr.ipv4.ihl, hdr.tcp.data_offset, (bit<16>)hdr.tcp.data_offset * (bit<16>)0x4});
-    }
-
+    
     action update_int_record(switchID_v swid) {
         hdr.tcp_int_option.kind = INT_KIND;
         hdr.tcp_int_option.length = 0x0c;
@@ -294,10 +273,9 @@ control MyEgress(inout headers_t hdr,
 
     table int_record {
         key = {
-            hdr.tcp_int_option.isValid() : exact;
+            // hdr.tcp_int_option.isValid() : exact;
         }
-        actions = { 
-	        add_int_record;
+        actions = {
             update_int_record;
 	        NoAction; 
         }
@@ -305,14 +283,15 @@ control MyEgress(inout headers_t hdr,
     }
     
     apply {
-        if (hdr.tcp.isValid()) {
+        if (hdr.tcp_int_option.isValid()) {
             int_record.apply();
+            log_msg("bib updating int");
         }
     } 
 }
 
 control MyComputeChecksum(inout headers_t hdr, inout metadata_t meta) {
-
+    
     apply {
         update_checksum(
             hdr.ipv4.isValid(),
@@ -330,42 +309,716 @@ control MyComputeChecksum(inout headers_t hdr, inout metadata_t meta) {
             hdr.ipv4.hdrChecksum,
             HashAlgorithm.csum16
         );
-        
-       update_checksum_with_payload(
-           hdr.tcp.isValid(),
-           { hdr.ipv4.srcAddr,
-             hdr.ipv4.dstAddr,
-             8w0,
-             hdr.ipv4.protocol,
-             meta.tcp_length,
-             hdr.tcp.src_port,
-             hdr.tcp.dst_port,
-             hdr.tcp.seq_no,
-             hdr.tcp.ack_no,
-             hdr.tcp.data_offset,
-             hdr.tcp.reserved,
-             hdr.tcp.flags,    
-             hdr.tcp.window,
-             hdr.tcp.urgent_ptr,
-             
-             hdr.tcp_int_option.kind,
-             hdr.tcp_int_option.length,
-             hdr.tcp_int_option.TagFreq,
-             hdr.tcp_int_option.LinkSpd,
-             hdr.tcp_int_option.INTval,
-             hdr.tcp_int_option.HopID,
-             hdr.tcp_int_option.HopLat,
-             hdr.tcp_int_option.INTEcr,
-             hdr.tcp_int_option.LnkSEcr,
-             hdr.tcp_int_option.HIDEcr,
-             hdr.tcp_int_option.HopLatEcr,
-             hdr.tcp_options
-             },
-           hdr.tcp.checksum,
-           HashAlgorithm.csum16
-       );
 
-       
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[0].isValid() && hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_int_option.kind,
+            hdr.tcp_int_option.length,
+            hdr.tcp_int_option.TagFreq,
+            hdr.tcp_int_option.LinkSpd,
+            hdr.tcp_int_option.INTval,
+            hdr.tcp_int_option.HopID,
+            hdr.tcp_int_option.HopLat,
+            hdr.tcp_int_option.INTEcr,
+            hdr.tcp_int_option.LnkSEcr,
+            hdr.tcp_int_option.HIDEcr,
+            hdr.tcp_int_option.HopLatEcr,
+
+            hdr.tcp_options_vec[0].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[0].isValid() && !hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_options_vec[0].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[1].isValid() && hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_int_option.kind,
+            hdr.tcp_int_option.length,
+            hdr.tcp_int_option.TagFreq,
+            hdr.tcp_int_option.LinkSpd,
+            hdr.tcp_int_option.INTval,
+            hdr.tcp_int_option.HopID,
+            hdr.tcp_int_option.HopLat,
+            hdr.tcp_int_option.INTEcr,
+            hdr.tcp_int_option.LnkSEcr,
+            hdr.tcp_int_option.HIDEcr,
+            hdr.tcp_int_option.HopLatEcr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[1].isValid() && !hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[2].isValid() && hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_int_option.kind,
+            hdr.tcp_int_option.length,
+            hdr.tcp_int_option.TagFreq,
+            hdr.tcp_int_option.LinkSpd,
+            hdr.tcp_int_option.INTval,
+            hdr.tcp_int_option.HopID,
+            hdr.tcp_int_option.HopLat,
+            hdr.tcp_int_option.INTEcr,
+            hdr.tcp_int_option.LnkSEcr,
+            hdr.tcp_int_option.HIDEcr,
+            hdr.tcp_int_option.HopLatEcr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[2].isValid() && !hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[3].isValid() && hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_int_option.kind,
+            hdr.tcp_int_option.length,
+            hdr.tcp_int_option.TagFreq,
+            hdr.tcp_int_option.LinkSpd,
+            hdr.tcp_int_option.INTval,
+            hdr.tcp_int_option.HopID,
+            hdr.tcp_int_option.HopLat,
+            hdr.tcp_int_option.INTEcr,
+            hdr.tcp_int_option.LnkSEcr,
+            hdr.tcp_int_option.HIDEcr,
+            hdr.tcp_int_option.HopLatEcr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data,
+            hdr.tcp_options_vec[3].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[3].isValid() && !hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data,
+            hdr.tcp_options_vec[3].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[4].isValid() && hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_int_option.kind,
+            hdr.tcp_int_option.length,
+            hdr.tcp_int_option.TagFreq,
+            hdr.tcp_int_option.LinkSpd,
+            hdr.tcp_int_option.INTval,
+            hdr.tcp_int_option.HopID,
+            hdr.tcp_int_option.HopLat,
+            hdr.tcp_int_option.INTEcr,
+            hdr.tcp_int_option.LnkSEcr,
+            hdr.tcp_int_option.HIDEcr,
+            hdr.tcp_int_option.HopLatEcr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data,
+            hdr.tcp_options_vec[3].data,
+            hdr.tcp_options_vec[4].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[4].isValid() && !hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data,
+            hdr.tcp_options_vec[3].data,
+            hdr.tcp_options_vec[4].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[5].isValid() && hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_int_option.kind,
+            hdr.tcp_int_option.length,
+            hdr.tcp_int_option.TagFreq,
+            hdr.tcp_int_option.LinkSpd,
+            hdr.tcp_int_option.INTval,
+            hdr.tcp_int_option.HopID,
+            hdr.tcp_int_option.HopLat,
+            hdr.tcp_int_option.INTEcr,
+            hdr.tcp_int_option.LnkSEcr,
+            hdr.tcp_int_option.HIDEcr,
+            hdr.tcp_int_option.HopLatEcr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data,
+            hdr.tcp_options_vec[3].data,
+            hdr.tcp_options_vec[4].data,
+            hdr.tcp_options_vec[5].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[5].isValid() && !hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data,
+            hdr.tcp_options_vec[3].data,
+            hdr.tcp_options_vec[4].data,
+            hdr.tcp_options_vec[5].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[6].isValid() && hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_int_option.kind,
+            hdr.tcp_int_option.length,
+            hdr.tcp_int_option.TagFreq,
+            hdr.tcp_int_option.LinkSpd,
+            hdr.tcp_int_option.INTval,
+            hdr.tcp_int_option.HopID,
+            hdr.tcp_int_option.HopLat,
+            hdr.tcp_int_option.INTEcr,
+            hdr.tcp_int_option.LnkSEcr,
+            hdr.tcp_int_option.HIDEcr,
+            hdr.tcp_int_option.HopLatEcr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data,
+            hdr.tcp_options_vec[3].data,
+            hdr.tcp_options_vec[4].data,
+            hdr.tcp_options_vec[5].data,
+            hdr.tcp_options_vec[6].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[6].isValid() && !hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data,
+            hdr.tcp_options_vec[3].data,
+            hdr.tcp_options_vec[4].data,
+            hdr.tcp_options_vec[5].data,
+            hdr.tcp_options_vec[6].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[7].isValid() && hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_int_option.kind,
+            hdr.tcp_int_option.length,
+            hdr.tcp_int_option.TagFreq,
+            hdr.tcp_int_option.LinkSpd,
+            hdr.tcp_int_option.INTval,
+            hdr.tcp_int_option.HopID,
+            hdr.tcp_int_option.HopLat,
+            hdr.tcp_int_option.INTEcr,
+            hdr.tcp_int_option.LnkSEcr,
+            hdr.tcp_int_option.HIDEcr,
+            hdr.tcp_int_option.HopLatEcr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data,
+            hdr.tcp_options_vec[3].data,
+            hdr.tcp_options_vec[4].data,
+            hdr.tcp_options_vec[5].data,
+            hdr.tcp_options_vec[6].data,
+            hdr.tcp_options_vec[7].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[7].isValid() && !hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data,
+            hdr.tcp_options_vec[3].data,
+            hdr.tcp_options_vec[4].data,
+            hdr.tcp_options_vec[5].data,
+            hdr.tcp_options_vec[6].data,
+            hdr.tcp_options_vec[7].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[8].isValid() && hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_int_option.kind,
+            hdr.tcp_int_option.length,
+            hdr.tcp_int_option.TagFreq,
+            hdr.tcp_int_option.LinkSpd,
+            hdr.tcp_int_option.INTval,
+            hdr.tcp_int_option.HopID,
+            hdr.tcp_int_option.HopLat,
+            hdr.tcp_int_option.INTEcr,
+            hdr.tcp_int_option.LnkSEcr,
+            hdr.tcp_int_option.HIDEcr,
+            hdr.tcp_int_option.HopLatEcr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data,
+            hdr.tcp_options_vec[3].data,
+            hdr.tcp_options_vec[4].data,
+            hdr.tcp_options_vec[5].data,
+            hdr.tcp_options_vec[6].data,
+            hdr.tcp_options_vec[7].data,
+            hdr.tcp_options_vec[8].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[8].isValid() && !hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data,
+            hdr.tcp_options_vec[3].data,
+            hdr.tcp_options_vec[4].data,
+            hdr.tcp_options_vec[5].data,
+            hdr.tcp_options_vec[6].data,
+            hdr.tcp_options_vec[7].data,
+            hdr.tcp_options_vec[8].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+    
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[9].isValid() && hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_int_option.kind,
+            hdr.tcp_int_option.length,
+            hdr.tcp_int_option.TagFreq,
+            hdr.tcp_int_option.LinkSpd,
+            hdr.tcp_int_option.INTval,
+            hdr.tcp_int_option.HopID,
+            hdr.tcp_int_option.HopLat,
+            hdr.tcp_int_option.INTEcr,
+            hdr.tcp_int_option.LnkSEcr,
+            hdr.tcp_int_option.HIDEcr,
+            hdr.tcp_int_option.HopLatEcr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data,
+            hdr.tcp_options_vec[3].data,
+            hdr.tcp_options_vec[4].data,
+            hdr.tcp_options_vec[5].data,
+            hdr.tcp_options_vec[6].data,
+            hdr.tcp_options_vec[7].data,
+            hdr.tcp_options_vec[8].data,
+            hdr.tcp_options_vec[9].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+
+
+        update_checksum_with_payload(
+            hdr.tcp_options_vec[9].isValid() && !hdr.tcp_int_option.isValid(),
+            {
+            hdr.ipv4.srcAddr,
+            hdr.ipv4.dstAddr,
+            8w0,
+            hdr.ipv4.protocol,
+            meta.tcp_length,
+            hdr.tcp.src_port,
+            hdr.tcp.dst_port,
+            hdr.tcp.seq_no,
+            hdr.tcp.ack_no,
+            hdr.tcp.data_offset,
+            hdr.tcp.reserved,
+            hdr.tcp.flags,    
+            hdr.tcp.window,
+            hdr.tcp.urgent_ptr,
+
+            hdr.tcp_options_vec[0].data,
+            hdr.tcp_options_vec[1].data,
+            hdr.tcp_options_vec[2].data,
+            hdr.tcp_options_vec[3].data,
+            hdr.tcp_options_vec[4].data,
+            hdr.tcp_options_vec[5].data,
+            hdr.tcp_options_vec[6].data,
+            hdr.tcp_options_vec[7].data,
+            hdr.tcp_options_vec[8].data,
+            hdr.tcp_options_vec[9].data 
+            },
+            hdr.tcp.checksum,
+            HashAlgorithm.csum16
+        );
+        
     }
 }
 
@@ -375,7 +1028,7 @@ control MyDeparser(packet_out packet, in headers_t hdr) {
         packet.emit(hdr.ipv4);
         packet.emit(hdr.tcp) ;
         packet.emit(hdr.tcp_int_option);
-        packet.emit(hdr.tcp_options);
+        packet.emit(hdr.tcp_options_vec);
     }
 }
 
