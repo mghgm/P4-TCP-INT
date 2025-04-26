@@ -1,8 +1,8 @@
 #!/usr/bin/bash
 
-ETH0="enp7s0"
-NODE_IP="192.168.100.20"
-OTHER_IP="192.168.100.21"
+ETH0="eth0"
+NODE_IP="172.31.45.223"
+OTHER_IP="172.31.40.188"
 
 
 VETH0="mininet-veth0"
@@ -55,4 +55,3 @@ sudo iptables -t nat -A POSTROUTING -s $SERVER_IP -p tcp --sport 8080 -j SNAT --
 
 #TODO Add a sed command to replace veth0 MAC in s*-commands.txt
 #TODO Add a sed command to replace OTHER ip address and MAC as well
-

@@ -1,8 +1,8 @@
 #!/usr/bin/bash
 
-ETH0="enp7s0"
-NODE_IP="192.168.100.21"
-OTHER_IP="192.168.100.20"
+ETH0="eth0"
+NODE_IP="172.31.40.188"
+OTHER_IP="172.31.45.223"
 
 
 VETH0="mininet-veth0"
@@ -10,6 +10,9 @@ VETH0_IP="10.0.4.100/16"
 VETH1="mininet-veth1"
 
 CLIENT_SUBNET="10.0.0.0/16"
+
+CLIENT1_IP="10.0.1.1"
+CLIENT1_MAC="00:00:00:00:01:01"
 
 flush_iptables() {
     sudo iptables -F            
@@ -34,6 +37,8 @@ if ! ip link show $VETH0 &> /dev/null || ! ip link show $VETH1 &> /dev/null; the
 
     sudo ip addr add $VETH0_IP dev $VETH0
 fi
+
+sudo arp -s $CLIENT1_IP $CLIENT1_MAC
 
 echo "Enable forwarding"
 echo '1' | sudo tee /proc/sys/net/ipv4/conf/$VETH0/forwarding

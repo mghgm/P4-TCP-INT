@@ -1,5 +1,6 @@
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
+
 #include <bpf/bpf_endian.h>
 
 #define BPF_SOCK_OPS_WRITE_HDR_OPT_CB 15
@@ -15,29 +16,31 @@ SEC("sockops")
 int bpf_sockops_parse_tcp_options(struct bpf_sock_ops *skops) {
     bpf_printk("Boom!");
 
-    if (skops->op == BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB) {
+    if (skops->op == BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB || skops->op == BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB) {
         int rv;
         rv = bpf_sock_ops_cb_flags_set(skops, BPF_SOCK_OPS_WRITE_HDR_OPT_CB_FLAG);
         if (rv < 0) {
-            bpf_printk("Failed to setup flag:: BPF_SOCK_OPS_PARSE_ALL_HDR_OPT_CB_FLAG, %d", rv);
-            return 1;
+            bpf_printk("Failed to set flag:: BPF_SOCK_OPS_WRITE_HDR_OPT_CB_FLAG, %d", rv);
         }
         
         int rc;
         int dscp;
         dscp = DSCP;
         rc = bpf_setsockopt(skops, IPPROTO_IP, IP_TOS, &dscp, sizeof(dscp));
-        if (rv < 0) {
+        if (rc < 0) {
             bpf_printk("Failed to set DSCP through:: bpf_setsockopt, %d", rc);
-            return 1;
         }
-    } else if (skops->op == BPF_SOCK_OPS_HDR_OPT_LEN_CB) {
+    }
+    else if (skops->op == BPF_SOCK_OPS_HDR_OPT_LEN_CB) {
         int rv;
         rv = bpf_reserve_hdr_opt(skops, 0x0c, 0);
         if (rv) {
-            bpf_printk("Failed to reserve option");
+            bpf_printk("Failed to reserve option, %d", rv);
         }
-    } else if (skops->op == BPF_SOCK_OPS_WRITE_HDR_OPT_CB) {
+    }
+    else if (skops->op == BPF_SOCK_OPS_WRITE_HDR_OPT_CB) {
+        bpf_printk("doom doom\n");
+
         char opt[12] = {0x72, 0x0c, 0x00, 0x00,
                         0x00, 0x00, 0x00, 0x00,
                         0x00, 0x00, 0x00, 0x00};
@@ -52,4 +55,3 @@ int bpf_sockops_parse_tcp_options(struct bpf_sock_ops *skops) {
 }
 
 char _license[] SEC("license") = "GPL";
-
